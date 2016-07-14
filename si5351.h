@@ -35,12 +35,15 @@
 #define SI5351_BUS_BASE_ADDR				0xC0
 #define SI5351_XTAL_FREQ					25000000
 #define SI5351_PLL_FIXED					900000000
+#define SI5351_FREQ_MULT					100ULL
+#define SI5351_DEFAULT_CLK					1000000000ULL
 
 #define SI5351_PLL_VCO_MIN					600000000
 #define SI5351_PLL_VCO_MAX					900000000
 #define SI5351_MULTISYNTH_MIN_FREQ			1000000
 #define SI5351_MULTISYNTH_DIVBY4_FREQ		150000000
 #define SI5351_MULTISYNTH_MAX_FREQ			160000000
+#define SI5351_MULTISYNTH_SHARE_MAX			112500000
 #define SI5351_MULTISYNTH67_MAX_FREQ		SI5351_MULTISYNTH_DIVBY4_FREQ
 #define SI5351_CLKOUT_MIN_FREQ				8000
 #define SI5351_CLKOUT_MAX_FREQ				SI5351_MULTISYNTH_MAX_FREQ
@@ -176,6 +179,9 @@
 
 /* Macro definitions */
 
+#define RFRAC_DENOM ((1L << 20) - 1)
+
+
 /*
  * Based on former asm-ppc/div64.h and asm-m68knommu/div64.h
  *
@@ -193,12 +199,13 @@
  */
 
 # define do_div(n,base) ({                                      \
-        uint32_t __base = (base);                               \
-        uint32_t __rem;                                         \
-        __rem = ((uint64_t)(n)) % __base;                       \
-        (n) = ((uint64_t)(n)) / __base;                         \
-        __rem;                                                  \
- })
+uint64_t __base = (base);                               \
+uint64_t __rem;                                         \
+__rem = ((uint64_t)(n)) % __base;                       \
+(n) = ((uint64_t)(n)) / __base;                         \
+__rem;                                                  \
+})
+
 
 /* Enum definitions */
 
@@ -217,7 +224,7 @@ enum si5351_variant {
 };
 
 enum si5351_clock {SI5351_CLK0, SI5351_CLK1, SI5351_CLK2, SI5351_CLK3,
-	SI5351_CLK4, SI5351_CLK5, SI5351_CLK6, SI5351_CLK7};
+	SI5351_CLK4, SI5351_CLK5, SI5351_CLK6, SI5351_CLK7, SI5351_CLKNONE};
 
 enum si5351_pll {SI5351_PLLA, SI5351_PLLB};
 
@@ -249,31 +256,16 @@ struct Si5351IntStatus
 	uint8_t LOS_STKY;
 };
 
-/* Suggested public function prototypes */
+/* Public function prototypes */
 
-void si5351_init(void);
-void si5351_set_freq(uint32_t, uint32_t, enum si5351_clock);
-void si5351_set_pll(uint32_t, enum si5351_pll);
+void si5351_init(uint8_t xtal_load_c, uint32_t ref_osc_freq);
+int si5351_set_freq(uint64_t, uint64_t, enum si5351_clock);
+void set_pll(uint64_t pll_freq, enum si5351_pll target_pll);
 void si5351_clock_enable(enum si5351_clock, uint8_t);
 void si5351_drive_strength(enum si5351_clock, enum si5351_drive);
 void si5351_update_status(void);
 void si5351_set_correction(int32_t);
 int32_t si5351_get_correction(void);
 
-/* Suggested private function prototypes */
-
-void rational_best_approximation(
-        unsigned long, unsigned long,
-        unsigned long, unsigned long,
-        unsigned long *, unsigned long *);
-uint32_t pll_calc(uint32_t, struct Si5351RegSet *, int32_t);
-uint32_t multisynth_calc(uint32_t, struct Si5351RegSet *);
-uint32_t multisynth_recalc(uint32_t, uint32_t,struct Si5351RegSet *);
-uint8_t si5351_write_bulk(uint8_t, uint8_t, uint8_t *);
-uint8_t si5351_write(uint8_t, uint8_t);
-uint8_t si5351_read(uint8_t, uint8_t *);
-void si5351_update_sys_status(struct Si5351Status *);
-void si5351_update_int_status(struct Si5351IntStatus *);
-void si5351_set_ms_source(enum si5351_clock, enum si5351_pll);
 
 #endif /* SI5351_H_ */
