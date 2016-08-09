@@ -51,7 +51,8 @@
 	static uint64_t clk2_freq;
 	static uint8_t clk0_int_mode, clk1_int_mode, clk2_int_mode;
 
-	static uint8_t lock_plla, lock_pllb;
+//	static uint8_t lock_plla;
+	static uint8_t lock_pllb;
 	static uint32_t xtal_freq;
 
 /********************************/
@@ -74,6 +75,8 @@
 	uint8_t si5351_read(uint8_t, uint8_t *);
 	void si5351_update_sys_status(struct Si5351Status *);
 	void si5351_update_int_status(struct Si5351IntStatus *);
+	void set_int(enum si5351_clock clk, uint8_t enable);
+	void ms_div(enum si5351_clock clk, uint8_t r_div, uint8_t div_by_4);
 
 
 /******************************/
@@ -690,7 +693,8 @@ uint64_t pll_calc(uint64_t freq, struct Si5351RegSet *reg, int32_t correction)
 {
 	uint64_t ref_freq = xtal_freq * SI5351_FREQ_MULT;
 	uint64_t a, b, c, p1, p2, p3;
-	uint64_t lltmp, rfrac, denom;
+	uint64_t lltmp, denom;
+	// uint64_t rfrac
 	//int64_t ref_temp;
 	
 	// Factor calibration value into nominal crystal frequency
@@ -725,7 +729,7 @@ uint64_t pll_calc(uint64_t freq, struct Si5351RegSet *reg, int32_t correction)
 	lltmp = freq % ref_freq;
 	lltmp *= denom;
 	do_div(lltmp, ref_freq);
-	rfrac = lltmp;
+//	rfrac = lltmp;
 	
 	b = (((uint64_t)(freq % ref_freq)) * RFRAC_DENOM) / ref_freq;
 	c = b ? RFRAC_DENOM : 1;
@@ -1081,30 +1085,150 @@ void set_ms(enum si5351_clock clk, struct Si5351RegSet ms_reg, uint8_t int_mode,
 		case SI5351_CLK0:
 			si5351_write_bulk(SI5351_CLK0_PARAMETERS, i, params);
 			break;
+			
 		case SI5351_CLK1:
 			si5351_write_bulk(SI5351_CLK1_PARAMETERS, i, params);
 			break;
+			
 		case SI5351_CLK2:
 			si5351_write_bulk(SI5351_CLK2_PARAMETERS, i, params);
 			break;
+			
 		case SI5351_CLK3:
 			si5351_write_bulk(SI5351_CLK3_PARAMETERS, i, params);
 			break;
+			
 		case SI5351_CLK4:
 			si5351_write_bulk(SI5351_CLK4_PARAMETERS, i, params);
 			break;
+			
 		case SI5351_CLK5:
 			si5351_write_bulk(SI5351_CLK5_PARAMETERS, i, params);
 			break;
+			
 		case SI5351_CLK6:
 			si5351_write_bulk(SI5351_CLK6_PARAMETERS, i, params);
 			break;
+			
 		case SI5351_CLK7:
 			si5351_write_bulk(SI5351_CLK7_PARAMETERS, i, params);
+			break;
+			
+		case SI5351_CLKNONE:
 			break;
 	}
 	
 	set_int(clk, int_mode);
 	ms_div(clk, r_div, div_by_4);
+}
+
+
+/*
+ * set_int(enum si5351_clock clk, uint8_t int_mode)
+ *
+ * clk - Clock output
+ *   (use the si5351_clock enum)
+ * enable - Set to 1 to enable, 0 to disable
+ *
+ * Set the indicated multisynth into integer mode.
+ */
+void set_int(enum si5351_clock clk, uint8_t enable)
+{
+	uint8_t reg_val;
+
+	if(si5351_read(SI5351_CLK0_CTRL + (uint8_t)clk, &reg_val) != 0)
+	{
+		return;
+	}
+
+	if(enable == 1)
+	{
+		reg_val |= (SI5351_CLK_INTEGER_MODE);
+	}
+	else
+	{
+		reg_val &= ~(SI5351_CLK_INTEGER_MODE);
+	}
+
+	si5351_write(SI5351_CLK0_CTRL + (uint8_t)clk, reg_val);
+
+	// Integer mode indication
+	switch(clk)
+	{
+	case SI5351_CLK0:
+		clk0_int_mode = enable;
+		break;
+	case SI5351_CLK1:
+		clk1_int_mode = enable;
+		break;
+	case SI5351_CLK2:
+		clk2_int_mode = enable;
+		break;
+	default:
+		break;
+	}
+}
+
+
+void ms_div(enum si5351_clock clk, uint8_t r_div, uint8_t div_by_4)
+{
+	uint8_t reg_val, reg_addr;
+
+	switch(clk)
+	{
+		case SI5351_CLK0:
+		reg_addr = SI5351_CLK0_PARAMETERS + 2;
+		break;
+		
+		case SI5351_CLK1:
+		reg_addr = SI5351_CLK1_PARAMETERS + 2;
+		break;
+		
+		case SI5351_CLK2:
+		reg_addr = SI5351_CLK2_PARAMETERS + 2;
+		break;
+		
+		case SI5351_CLK3:
+		reg_addr = SI5351_CLK3_PARAMETERS + 2;
+		break;
+		
+		case SI5351_CLK4:
+		reg_addr = SI5351_CLK4_PARAMETERS + 2;
+		break;
+		
+		case SI5351_CLK5:
+		reg_addr = SI5351_CLK5_PARAMETERS + 2;
+		break;
+		
+		case SI5351_CLK6:
+		case SI5351_CLK7:
+		case SI5351_CLKNONE:
+		return;
+		
+		default:
+		return;
+	}
+
+	if(si5351_read(reg_addr, &reg_val) != 0)
+	{
+		return;
+	}
+
+
+	// Clear the relevant bits
+	reg_val &= ~(0x7c);
+
+	if(div_by_4 == 0)
+	{
+		reg_val &= ~(SI5351_OUTPUT_CLK_DIVBY4);
+	}
+	else
+	{
+		reg_val |= (SI5351_OUTPUT_CLK_DIVBY4);
+	}
+
+	reg_val |= (r_div << SI5351_OUTPUT_CLK_DIV_SHIFT);
+
+	si5351_write(reg_addr, reg_val);
 }
 
