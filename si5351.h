@@ -1,5 +1,7 @@
 /*
  * si5351.h - Si5351 library for avr-gcc
+ * Revision 0.3
+ * 8 Oct 2016
  *
  * Copyright (C) 2014 Jason Milldrum <milldrum@gmail.com>
  *
@@ -21,6 +23,45 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/*
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+Si5351 Frequency Setting Algorithm
+
+OVERVIEW
+The algorithm used in this library starts with the desired output frequency, and works backwards through Synthesis Stage 2 and Synthesis Stage 1, to determine the necessary register settings.
+
+STEPS (Output CLK0)
+
+1. Choose a desired CLK0 output frequency (Fout) in Hz.
+2. Find an even integer Multisynth Divider Ratio (a_msd) that multiplies Fout to obtain a value between 600 MHz and 900 MHz. Set b_msd = 0, 
+   and c_msd = 1. Note: a_msd has a valid range of all even integers between 4 and 900; we are choosing to exclude all odd and fractional solutions.
+3. Calculate the VCO frequency (Fvco) in Hz where Fvco = a_msd x Fout.
+4. Find values for the Feedback Multisynth Divider Equation (a_fmd, b_fmd, c_fmd) that will multiply the crystal oscillator frequency (Fxtal) 
+   to obtain Fvco = Fxtal x (a_fmd + (b_fmd/c_fmd)). Note: (a_fmd + (b_fmd/c_fmd)) has a valid range of 15 to 90 with resolution of 1/1048575.
+5. Apply settings derived in previous steps to program PLLA, and use PLLA to generate Fout on CLK0.
+
+
+STEPS (Output CLK1)
+
+CLK1 steps are exactly the same as for CLK0, except for Step 5, where we will program PLLB, and use PLLB to generate Fout on CLK1.
+
+
+STEPS (Output CLK2)
+
+1. Choose a desired CLK2 output frequency (Fout) in Hz.
+2. Starting with the Fvco applied to PLLB to generate CLK1, derive a Multisynth Divider Ratio (a_msd, b_msd and c_msd) that multiplies 
+   Fvco to obtain Fout = Fvco x (a_msd + (b_msd/c_msd)). Note: (a_msd + (b_msd/c_msd)) has a valid range of 4, 6, and all values between 
+   8 and 900 with resolution of 1/1048575. The resulting Fout might not be exact.
+3. Apply settings derived in Step 2 to use PLLB to generate Fout on CLK2.
+
+
+The order of setting clocks CLK1 and CLK2 may be reversed. If that is done, then the Fvco for PLLB will be derived from the Fout chosen 
+for CLK2 (instead of CLK1 as shown in the steps above). Thus the order in which clocks CLK1 and CLK2 can affect Fvco for PLLB, 
+and therefore the accuracy of the second clock set.
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+*/
+
 #include <avr/eeprom.h>
 
 #ifndef SI5351_H_
@@ -35,21 +76,43 @@
 //				CLK1 uses PLLB
 //				CLK2 uses PLLB
 //
+//
+// TYPICAL USAGE:
+//
+//  /* Initialize the Si5351 using the default xtal reference frequency (25 MHz); load capacitance = 10 pF. */
+// 	si5351_init(SI5351_CRYSTAL_LOAD_10PF, 0);
+//  /* Set the CLK0 output to 144.571000 MHz */
+//	si5351_set_freq(144571000, SI5351_CLK0);
+//
+// The Si5351 needs only to be initialized once at power up. Initialization leaves all clocks powered down.
+//
+// Calls to si5351_set_freq set one output clock only: it must be called once for each clock that will be used.
+// Unused clocks will remain powered down. Setting the frequency of a clock also enables that clock's output.
+//
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // These definitions affect compiled code size as well as debugging and error checking functionality.
-// Enable definitions as needed, but check program memory usage to avoid problems.
+//
+// Debug statements should be commented out in production code
+//#define DEBUG_WITHOUT_I2C
 //#define DEBUG_VALUES
+//
+// Enable the following definitions as needed, but check program memory usage.
 //#define SUPPORT_FOUT_BELOW_1024KHZ
 //#define DO_BOUNDS_CHECKING
-//#define PREVENT_ILLEGAL_COMMANDS
 //#define DIVIDE_XTAL_FREQ_IF_NEEDED
 //#define APPLY_XTAL_CALIBRATION_VALUE
 //#define SUPPORT_STATUS_READS
+//
+// The following flag is used to disable GCC compiler optimizations in code regions where the optimizer has
+// found to introduce run-time problems. Comment out the following define if your compiler does not support 
+// the syntax used in this library.
+#define SELECTIVELY_DISABLE_OPTIMIZATION
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define SI5351_BUS_BASE_ADDR				0xC0
+#define SI5351_BUS_BASE_ADDR				0xC0  /* corresponds to slave address = 0x60 */
 #define SI5351_XTAL_FREQ					25000000UL
 #define SI5351_PLL_FIXED					900000000UL
 
@@ -197,6 +260,18 @@
 #endif
 
 
+#ifdef DEBUG_VALUES
+
+#define NUM_REGS_MAX 100
+
+typedef struct Reg_Data{
+	unsigned char Reg_Addr;
+	unsigned char Reg_Val;
+} Reg_Data;
+
+#endif // #ifdef DEBUG_VALUES
+
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Typedefs
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -224,13 +299,14 @@ typedef enum si5351_clock {SI5351_CLK0, SI5351_CLK1, SI5351_CLK2, SI5351_CLK3,
 	SI5351_CLK4, SI5351_CLK5, SI5351_CLK6, SI5351_CLK7, SI5351_CLKNONE} Si5351_clock;
 */
 
-typedef enum si5351_xtal_load_pF {
+typedef enum si5351_xtal_load_pF 
+{
 	SI5351_CRYSTAL_LOAD_6PF	= (uint8_t)(1<<6),
 	SI5351_CRYSTAL_LOAD_8PF = (uint8_t)(2<<6),
 	SI5351_CRYSTAL_LOAD_10PF = (uint8_t)(3<<6)
 } Si5351_Xtal_load_pF;
 
-typedef enum si5351_clock {SI5351_CLK0, SI5351_CLK1, SI5351_CLK2, SI5351_CLKNONE} Si5351_clock;
+typedef enum si5351_clock {SI5351_CLK0=0, SI5351_CLK1=1, SI5351_CLK2=2, SI5351_CLKNONE} Si5351_clock;
 
 typedef enum si5351_pll {SI5351_PLLA=1, SI5351_PLLB=2, SI5351_PLLA_B=3} Si5351_pll;
 
@@ -260,7 +336,9 @@ typedef struct si5351IntStatus
 	uint8_t LOS_STKY;
 } Si5351IntStatus;
 
-/* Public Function Prototypes */
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Public Function Prototypes
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void si5351_init(Si5351_Xtal_load_pF, Frequency_Hz);
 BOOL si5351_set_freq(Frequency_Hz, Si5351_clock);
@@ -268,7 +346,17 @@ void si5351_clock_enable(Si5351_clock, BOOL);
 void si5351_drive_strength(Si5351_clock, Si5351_drive);
 void si5351_set_correction(int32_t);
 
-void si5351_read_status(void);
+BOOL si5351_write(uint8_t, uint8_t);
+void pll_reset(Si5351_pll);
 
+#ifdef SUPPORT_STATUS_READS
+void si5351_read_status(void);
+#endif
+
+#ifdef DEBUG_VALUES
+BOOL write_register_map(void);
+BOOL compare_with_register_map(void);
+void dump_registers(void);
+#endif
 
 #endif /* SI5351_H_ */

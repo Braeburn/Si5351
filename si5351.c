@@ -1,15 +1,13 @@
 /*
  * si5351.c - Si5351 library for avr-gcc
+ * Revision 0.3
+ * 8 Oct 2016
  *
  * Copyright (C) 2014 Jason Milldrum <milldrum@gmail.com>
  *
  * Some tuning algorithms derived from clk-si5351.c in the Linux kernel.
  * Sebastian Hesselbarth <sebastian.hesselbarth@gmail.com>
  * Rabeeh Khoury <rabeeh@solid-run.com>
- *
- * rational_best_approximation() derived from lib/rational.c in
- * the Linux kernel.
- * Copyright (C) 2009 emlix GmbH, Oskar Schirmer <oskar@scara.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,22 +31,131 @@
 #include <util/twi.h>
 #include <avr/eeprom.h>
 
-#include "si5351.h"
 #include "i2c.h"
-#include "defs.h"
+#include "si5351.h"
 
 /********************************/
 /* Global Variables             */
 /********************************/
 	uint32_t EEMEM ee_ref_correction = 0;
 	static int32_t ref_correction = 0;
-
-#ifdef SUPPORT_STATUS_READS
-	static Si5351Status dev_status;
-	static Si5351IntStatus dev_int_status;
-#endif
+	Frequency_Hz freqVCOB = 0;
 
 	static Frequency_Hz xtal_freq = SI5351_XTAL_FREQ;
+	static uint8_t enabledClocksMask = 0x00;
+
+
+#ifdef SUPPORT_STATUS_READS
+	Si5351Status dev_status;
+	Si5351IntStatus dev_int_status;
+#endif
+
+#ifdef DEBUG_VALUES
+// Paste ClockBuilder-generated register values below. These will
+// be compared with what this library generates.
+Reg_Data const Reg_Store[NUM_REGS_MAX] = {
+{ 15,0x00},
+{ 16,0x4C},
+{ 17,0x2C},
+{ 18,0x6C},
+{ 19,0x80},
+{ 20,0x80},
+{ 21,0x80},
+{ 22,0x80},
+{ 23,0xC0},
+{ 24,0x00},
+{ 25,0x00},
+{ 26,0x00},
+{ 27,0x7D},
+{ 28,0x00},
+{ 29,0x0D},
+{ 30,0xFE},
+{ 31,0x00},
+{ 32,0x00},
+{ 33,0x7A},
+{ 34,0x00},
+{ 35,0x01},
+{ 36,0x00},
+{ 37,0x0C},
+{ 38,0x00},
+{ 39,0x00},
+{ 40,0x00},
+{ 41,0x00},
+{ 42,0x00},
+{ 43,0x01},
+{ 44,0x00},
+{ 45,0x01},
+{ 46,0x00},
+{ 47,0x00},
+{ 48,0x00},
+{ 49,0x00},
+{ 50,0x00},
+{ 51,0x6B},
+{ 52,0x00},
+{ 53,0x1E},
+{ 54,0xB5},
+{ 55,0x00},
+{ 56,0x00},
+{ 57,0x59},
+{ 58,0x00},
+{ 59,0x01},
+{ 60,0x00},
+{ 61,0x03},
+{ 62,0x00},
+{ 63,0x00},
+{ 64,0x00},
+{ 65,0x00},
+{ 66,0x00},
+{ 67,0x00},
+{ 68,0x00},
+{ 69,0x00},
+{ 70,0x00},
+{ 71,0x00},
+{ 72,0x00},
+{ 73,0x00},
+{ 74,0x00},
+{ 75,0x00},
+{ 76,0x00},
+{ 77,0x00},
+{ 78,0x00},
+{ 79,0x00},
+{ 80,0x00},
+{ 81,0x00},
+{ 82,0x00},
+{ 83,0x00},
+{ 84,0x00},
+{ 85,0x00},
+{ 86,0x00},
+{ 87,0x00},
+{ 88,0x00},
+{ 89,0x00},
+{ 90,0x00},
+{ 91,0x00},
+{ 92,0x00},
+{149,0x00},
+{150,0x00},
+{151,0x00},
+{152,0x00},
+{153,0x00},
+{154,0x00},
+{155,0x00},
+{156,0x00},
+{157,0x00},
+{158,0x00},
+{159,0x00},
+{160,0x00},
+{161,0x00},
+{162,0x00},
+{163,0x00},
+{164,0x00},
+{165,0x00},
+{166,0x00},
+{167,0x00},
+{168,0x00},
+{169,0x00},
+{170,0x00},
+};
+#endif // #ifdef DEBUG_VALUES
 
 /********************************/
 /* Private function prototypes  */
@@ -77,16 +184,25 @@
 #else
 	void set_pll(Frequency_Hz, Si5351_pll);
 #endif
-	
+
+	Frequency_Hz multisynth_estimate(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *int_mode, BOOL *divBy4);	
 	int32_t si5351_get_correction(void);
 	void set_multisynth_registers_source(Si5351_clock, Si5351_pll);
 	void set_multisynth_registers(Si5351_clock, Si5351RegSet, uint8_t, uint8_t, BOOL);
 	uint32_t calc_gcd(uint32_t, uint32_t);
+	void reduce_by_gcd(uint32_t *, uint32_t *);
 	BOOL si5351_write_bulk(uint8_t, uint8_t, uint8_t *);
 	BOOL si5351_write(uint8_t, uint8_t);
 	BOOL si5351_read(uint8_t, uint8_t *);
 	void set_integer_mode(Si5351_clock, BOOL);
 	void ms_div(Si5351_clock, uint8_t, BOOL);
+
+#ifdef NOT_NEEDED
+	void rational_best_approximation(
+		uint32_t given_numerator, uint32_t given_denominator,
+		uint32_t max_numerator, uint32_t max_denominator,
+		uint32_t *best_numerator, uint32_t *best_denominator);
+#endif // NOT_NEEDED
 
 #ifdef SUPPORT_STATUS_READS
 	BOOL si5351_read_sys_status(Si5351Status *);
@@ -109,16 +225,39 @@
  */
 void si5351_init(Si5351_Xtal_load_pF xtal_load_c, Frequency_Hz ref_osc_freq)
 {
+#ifndef DEBUG_WITHOUT_I2C
 	// Start I2C comms
 	i2c_init();
+#endif
+
+#ifdef DEBUG_VALUES
+	uint8_t result_val = 0x00;
+	BOOL result = FALSE;
+#endif
+
+	freqVCOB = 0;
+	xtal_freq = SI5351_XTAL_FREQ;
+	enabledClocksMask = 0x00;
+
+	// Disable Outputs
+	// Set CLKx_DIS high; Reg. 3 = 0xFF
+	si5351_write(3, 0xff);
+
+	// Power down clocks
+	si5351_write(16, 0xCC);
+	si5351_write(17, 0xCC);
+	si5351_write(18, 0xCC);
 	
 	// Set crystal load capacitance
 	uint8_t reg_val = 0x12; // 0b010010 reserved value bits
 	reg_val |= xtal_load_c;
+	
 	si5351_write(SI5351_CRYSTAL_LOAD, reg_val);
 	
+	if(!ref_osc_freq) ref_osc_freq = SI5351_XTAL_FREQ;
+	
 	// Change the ref osc freq if different from default
-	if(ref_osc_freq != 0)
+	if(ref_osc_freq != xtal_freq)
 	{
 		uint8_t reg_val_forDiv;
 		
@@ -150,23 +289,87 @@ void si5351_init(Si5351_Xtal_load_pF xtal_load_c, Frequency_Hz ref_osc_freq)
 #endif // #ifndef DIVIDE_XTAL_FREQ_IF_NEEDED
 		
 		si5351_write(SI5351_PLL_INPUT_SOURCE, reg_val_forDiv);
-	}
-	
-	// Initialize the CLK outputs according to flowchart in datasheet
-	// First, turn them off
-	si5351_write(16, 0x80);
-	si5351_write(17, 0x80);
-	si5351_write(18, 0x80);
-	
-	// Turn the clocks back on...
-	si5351_write(16, 0x0c);
-	si5351_write(17, 0x0c);
-	si5351_write(18, 0x0c);
-	
-	// Then reset the PLLs
-	pll_reset(SI5351_PLLA_B);
+	}	
 }
 
+#ifdef DEBUG_VALUES
+BOOL write_register_map(void)
+{
+	BOOL result = FALSE;
+	uint8_t result_data;
+	Reg_Data rd;
+	uint16_t i = 0;
+	for(i=0; i<NUM_REGS_MAX; i++)
+	{
+		rd = Reg_Store[i];
+		result = si5351_write(rd.Reg_Addr, rd.Reg_Val);
+		if(result) break;
+		result = si5351_read(rd.Reg_Addr, &result_data);
+		if(result) break;
+	}
+	
+	if(result)
+	{
+		i = i+1;
+	}
+	
+	return result;
+}
+#endif
+
+#ifdef DEBUG_VALUES
+
+void dump_registers()
+{
+	BOOL result;
+	Reg_Data rd;
+	uint16_t i = 0;
+	uint8_t result_data;
+	uint8_t addr;
+
+	for(i=0; i<256; i++)
+	{
+//		rd = Reg_Store[i];
+//		addr = rd.Reg_Addr;
+		addr = i;
+		result = si5351_read(addr, &result_data);
+		if(result) break; // Place breakpoint here to print out register contents
+	}
+	
+	if(result)
+	{
+		i = i+1; // place breakpoint here to catch read errors
+	}
+	
+	return;
+}
+
+BOOL compare_with_register_map(void)
+{
+	BOOL result = FALSE;
+	uint8_t result_data;
+	uint8_t count = 0;
+	Reg_Data rd;
+	uint16_t i = 0;
+	for(i=0; i<NUM_REGS_MAX; i++)
+	{
+		rd = Reg_Store[i];
+		result = si5351_read(rd.Reg_Addr, &result_data);
+		if(result) break;
+		if(result_data != rd.Reg_Val)
+		{
+			count++;
+		}
+	}
+	
+	if(result)
+	{
+		i = i+1;
+	}
+	
+	return result;
+}
+#endif
 
 
 /*
@@ -185,6 +388,7 @@ BOOL si5351_set_freq(Frequency_Hz freq_Fout, Si5351_clock clk)
 	Si5351RegSet ms_reg;
 	Frequency_Hz freq_VCO = 0;
 	Si5351_pll target_pll;
+	uint8_t clock_ctrl_addr;
 	uint8_t r_div = SI5351_OUTPUT_CLK_DIV_1;
 	BOOL int_mode = FALSE;
 	BOOL div_by_4 = FALSE;
@@ -203,56 +407,178 @@ BOOL si5351_set_freq(Frequency_Hz freq_Fout, Si5351_clock clk)
 	r_div = select_r_div(&freq_Fout);
 #endif
 
-	// Determine which PLL to use
-	// CLK0 gets PLLA, CLK1 gets PLLB
-	// CLK2 gets PLLB if necessary
+	// Determine which PLL to use: CLK0 gets PLLA, CLK1 and CLK2 get PLLB
+	// The first of CLK1 or CLK2 to be configured, determines the VCO frequency used for PLLB.
+	// The second of CLK1 or CLK2 to be configured will attempt to achieve Fout by adjusting the
+	// Multisynth Divider values only.
 	// Only good for Si5351A3 variant
 	switch(clk)
 	{
 		case SI5351_CLK0:
 		{
+			enabledClocksMask |= 0x01;
+			clock_ctrl_addr = 16;
+			
+			// Block 1: Disable Outputs
+			// Set CLKx_DIS high; Reg. 3 = 0xFF
+//			si5351_write(3, ~enabledClocksMask | 0xF9); // only disable CLK0
+
 			target_pll = SI5351_PLLA;
 		}
 			break;
 				
-		case SI5351_CLK2:
 		case SI5351_CLK1:
 		{
-			// No checking is performed to ensure that PLLB is unavailable due to other output being < 1.024 MHz or >= 112.5 MHz
+			// No checking is performed to ensure that PLLB is not unavailable due to other output being < 1.024 MHz or >= 112.5 MHz
 			// User must ensure the clock design is valid before setting clocks
+			
+			enabledClocksMask |= 0x02;
+			clock_ctrl_addr = 17;
+			
+			// Block 1: Disable Outputs
+			// Set CLKx_DIS high; Reg. 3 = 0xFF
+			si5351_write(3, ~enabledClocksMask | 0xFA); // only disable CLK1
+
 			target_pll = SI5351_PLLB;
 		}
 			break;
+			
+		case SI5351_CLK2:
+		{
+			// No checking is performed to ensure that PLLB is not unavailable due to other output being < 1.024 MHz or >= 112.5 MHz
+			// User must ensure the clock design is valid before setting clocks
+			
+			enabledClocksMask |= 0x04;
+			clock_ctrl_addr = 18;
+			
+			// Block 1: Disable Outputs
+			// Set CLKx_DIS high; Reg. 3 = 0xFF
+			si5351_write(3, ~enabledClocksMask | 0xFC); // only disable CLK2
+
+			target_pll = SI5351_PLLB;
+		}
+		break;
 			
 		default:
 			return TRUE;
 			break;
 	}	
 
-#ifdef DEBUG_VALUES
-	freq_VCO = multisynth_calc(freq_Fout, &ms_reg, &int_mode, &div_by_4, &div);
-#else
-	freq_VCO = multisynth_calc(freq_Fout, &ms_reg, &int_mode, &div_by_4);
-#endif
+	// http://www.silabs.com/Support%20Documents/TechnicalDocs/Si5351-B.pdf
+	// Page 19
+	// I2C Programming Procedure
+	//
+
+	// Block 1 handled above
 	
-	// Set multisynth registers (MS must be set before PLL)
-	set_multisynth_registers_source(clk, target_pll);
-	set_multisynth_registers(clk, ms_reg, int_mode, r_div, div_by_4);
+	// Block 2:
+	// Power down all output drivers
+	// Reg. 16, 17, 18, 19, 20, 21, 22, 23 = 0x80
+//	si5351_write(clock_ctrl_addr, 0xCC); // power down only clock being set, leaving that clock configured as follows:
+	//   o Drive strength = 2 mA
+	//   o Input source = multisynth
+	//   o Output clock not inverted
+	//   o PLLA is multisynth source
+	//   o Integer mode set
+	//   o Clock powered down
+	// If any of the above settings is incorrect, it needs to be set correctly in the code that follows.
+
+	// Block 3:
+	// Set interrupt masks
+	// Ignore this for Si5153A
+
+	// Block 4:
+	// Write new configuration to device using
+	// the contents of the register map
+	// generated in software above. This
+	// step also needs to power up the output drivers
+	// (Registers 15-92 and 149-170 and 183)
 	
 #ifdef DEBUG_VALUES
 	Frequency_Hz freq_VCO_calc;
 	Frequency_Hz fout_calc;
-	Frequency_Hz f_err;
+	int32_t f_err;
 #endif
+
+	if((target_pll == SI5351_PLLA) || !freqVCOB)
+	{
+#ifdef DEBUG_VALUES
+		freq_VCO = multisynth_calc(freq_Fout, &ms_reg, &int_mode, &div_by_4, &div);
+#else
+		freq_VCO = multisynth_calc(freq_Fout, &ms_reg, &int_mode, &div_by_4);
+#endif		
+	}
+	else
+	{
+#ifdef DEBUG_VALUES
+		fout_calc = freq_Fout; // save the intended output frequency
+#endif
+		freq_Fout = multisynth_estimate(freq_Fout, &ms_reg, &int_mode, &div_by_4);
+	}
+	
+	// Set multisynth registers (MS must be set before PLL)
+	set_multisynth_registers_source(clk, target_pll);
+	set_multisynth_registers(clk, ms_reg, int_mode, r_div, div_by_4);
 
 	// Set PLL if necessary
 #ifdef DEBUG_VALUES
-	freq_VCO_calc = set_pll(freq_VCO, target_pll);
-	fout_calc = freq_VCO_calc / div;
+	if(freq_VCO)
+	{
+		freq_VCO_calc = set_pll(freq_VCO, target_pll);
+		fout_calc = freq_VCO_calc / div;
+	}
+
 	f_err = freq_Fout - fout_calc;
 #else
-	set_pll(freq_VCO, target_pll);
+	if(freq_VCO) set_pll(freq_VCO, target_pll);
 #endif
+
+	// Block 5:
+	// Apply PLLA or PLLB soft reset
+	// Reg. 177 = 0xAC
+	pll_reset(target_pll);
+	
+	// Block 6:
+	// Enable desired outputs
+	// (see Register 3)
+	si5351_write(3, ~enabledClocksMask); // only enable clock(s) in use
+	
+	// power up the clock
+	if(target_pll == SI5351_PLLA)
+	{
+		si5351_write(clock_ctrl_addr, 0x4C); // power up only clock being set, leaving that clock configured as follows:
+		//   o Drive strength = 2 mA
+		//   o Input source = multisynth
+		//   o Output clock not inverted
+		//   o PLLA is multisynth source
+		//   o Integer mode set
+		//   o Clock powered up
+	}
+	else
+	{
+		if(int_mode)
+		{
+			si5351_write(clock_ctrl_addr, 0x6C); // power up only clock being set, leaving that clock configured as follows:
+			if(freq_VCO) freqVCOB = freq_VCO;
+			//   o Drive strength = 2 mA
+			//   o Input source = multisynth
+			//   o Output clock not inverted
+			//   o PLLB is multisynth source
+			//   o Integer mode set
+			//   o Clock powered up
+		}
+		else
+		{
+			si5351_write(clock_ctrl_addr, 0x2C); // power up only clock being set, leaving that clock configured as follows:
+			if(freq_VCO) freqVCOB = freq_VCO;
+			//   o Drive strength = 2 mA
+			//   o Input source = multisynth
+			//   o Output clock not inverted
+			//   o PLLB is multisynth source
+			//   o Integer mode cleared
+			//   o Clock powered up
+		}
+	}
 	
 	return FALSE;
 }
@@ -269,7 +595,7 @@ BOOL si5351_set_freq(Frequency_Hz freq_Fout, Si5351_clock clk)
  */
 void si5351_clock_enable(Si5351_clock clk, BOOL enable)
 {
-	uint8_t reg_val;
+	uint8_t reg_val; 
 
 	if(si5351_read(SI5351_OUTPUT_ENABLE_CTRL, &reg_val))
 	{
@@ -338,7 +664,7 @@ void si5351_drive_strength(Si5351_clock clk, Si5351_drive drive)
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /*
- * pll_reset(Ssi5351_pll target_pll)
+ * pll_reset(Si5351_pll target_pll)
  *
  * target_pll - Which PLL to reset (use the si5351_pll enum)
  *
@@ -370,10 +696,9 @@ uint8_t select_r_div(Frequency_Hz *freq)
 {
 	uint8_t r_div = SI5351_OUTPUT_CLK_DIV_1;
 	
-	Frequency_Hz temp = *freq;
 	Frequency_Hz max_freq = SI5351_CLKOUT_MIN_FREQ * 128;
 	
-	if(temp < max_freq)
+	if(*freq < max_freq)
 	{
 			// Choose the correct R divider for output frequencies between 8 kHz and 1.024 MHz
 		if((*freq >= SI5351_CLKOUT_MIN_FREQ) && (*freq < SI5351_CLKOUT_MIN_FREQ * 2))
@@ -438,6 +763,7 @@ void set_pll(Frequency_Hz freq_VCO, Si5351_pll target_pll)
 	
 	ref_correction = si5351_get_correction();
 	
+	// Output Multisynth Settings (Synthesis Stage 2)
 #ifdef DEBUG_VALUES
 	Frequency_Hz result = pll_calc(freq_VCO, &pll_reg, ref_correction);
 	Frequency_Hz pll_error = freq_VCO - result;
@@ -449,38 +775,22 @@ void set_pll(Frequency_Hz freq_VCO, Si5351_pll target_pll)
 	
 	// Prepare an array for parameters to be written to
 	uint8_t i = 0;
-	uint8_t temp;
 	
 	// Registers 26-27
-	temp = ((pll_reg.p3 >> 8) & 0xFF);
-	params[i++] = temp;
-	
-	temp = (uint8_t)(pll_reg.p3  & 0xFF);
-	params[i++] = temp;
-	
+	params[i++] = ((pll_reg.p3 >> 8) & 0xFF);
+	params[i++] = (uint8_t)(pll_reg.p3  & 0xFF);
 	// Register 28
-	temp = (uint8_t)((pll_reg.p1 >> 16) & 0x03);
-	params[i++] = temp;
-	
+	params[i++] = (uint8_t)((pll_reg.p1 >> 16) & 0x03);
 	// Registers 29-30
-	temp = (uint8_t)((pll_reg.p1 >> 8) & 0xFF);
-	params[i++] = temp;
-	
-	temp = (uint8_t)(pll_reg.p1  & 0xFF);
-	params[i++] = temp;
-	
+	params[i++] = (uint8_t)((pll_reg.p1 >> 8) & 0xFF);
+	params[i++] = (uint8_t)(pll_reg.p1  & 0xFF);
 	// Register 31
-	temp = (uint8_t)((pll_reg.p3 >> 12) & 0xF0);
-	temp += (uint8_t)((pll_reg.p2 >> 16) & 0x0F);
-	params[i++] = temp;
-	
+	params[i] = (uint8_t)((pll_reg.p3 >> 12) & 0xF0);
+	params[i++] += (uint8_t)((pll_reg.p2 >> 16) & 0x0F);
 	// Registers 32-33
-	temp = (uint8_t)((pll_reg.p2 >> 8) & 0xFF);
-	params[i++] = temp;
-	
-	temp = (uint8_t)(pll_reg.p2  & 0xFF);
-	params[i++] = temp;
-	
+	params[i++] = (uint8_t)((pll_reg.p2 >> 8) & 0xFF);
+	params[i++] = (uint8_t)(pll_reg.p2  & 0xFF);
+
 	// Write the parameters
 	if(target_pll == SI5351_PLLA)
 	{
@@ -576,7 +886,6 @@ BOOL pll_calc(Frequency_Hz vco_freq, Si5351RegSet *reg, int32_t correction)
 #endif
 	Frequency_Hz ref_freq = xtal_freq;
 	uint32_t a, b, c;
-	uint32_t gcd;
 	
 #ifdef APPLY_XTAL_CALIBRATION_VALUE
 	// Factor calibration value into nominal crystal frequency
@@ -601,15 +910,8 @@ BOOL pll_calc(Frequency_Hz vco_freq, Si5351RegSet *reg, int32_t correction)
 	b = vco_freq % ref_freq;
 	c = ref_freq;
 	
-	gcd = calc_gcd(b, c);
-	
-	if(gcd > 1)
-	{
-		b /= gcd;
-		c /= gcd;
-	}
-	
-	// Calculate parameters
+	reduce_by_gcd(&b, &c);
+
 	uint32_t bx128 = b << 7;
 	uint32_t bx128overc = bx128 / c;
 	reg->p1 = (uint32_t)((a << 7) + bx128overc) - 512; // 128 * a + floor((128 * b) / c) - 512
@@ -621,10 +923,10 @@ BOOL pll_calc(Frequency_Hz vco_freq, Si5351RegSet *reg, int32_t correction)
 	// Recalculate frequency as fIN * (a + b/c)
 	if(a)
 	{
-		uint64_t lltmp = (uint64_t)ref_freq * (uint64_t)b;
-		lltmp /= c;
-		lltmp += ref_freq * a;
-		result = lltmp;
+		uint64_t temp = (uint64_t)ref_freq * (uint64_t)b;
+		temp /= c;
+		temp += ref_freq * a;
+		result = temp;
 	}
 	
 	return result;
@@ -642,16 +944,25 @@ BOOL pll_calc(Frequency_Hz vco_freq, Si5351RegSet *reg, int32_t correction)
  * Simple implementation of Euclid's Algorithm for calculating GCD of two uint32's
  *
  */
-uint32_t calc_gcd(uint32_t m, uint32_t n)
+void reduce_by_gcd(uint32_t *m, uint32_t *n)
 {
-    if(!m || !n)
-        return(0);
+	uint32_t r;
+	uint32_t b = *m;
+	uint32_t c = *n;
+	
+    if(!*m || !*n)
+        return;
 
-    for(uint32_t r = m%n; r; m = n, n = r, r = m%n);
+    for(r = b%c; r; b = c, c = r, r = b%c);
 
-    return(n);
+	if(c > 1)
+	{
+		*m /= c;
+		*n /= c;
+	}
+	
+    return;
 }
-
 
 
 /*
@@ -664,7 +975,7 @@ uint32_t calc_gcd(uint32_t m, uint32_t n)
  * Notes: This implementation only supports even integer divider ratios 4 <= div <= 900.
  *        This implementation always sets *int_mode to TRUE
  * 
- * Returns zero on failure. int_mode and divBy4 will be set appropriately.
+ * Returns zero on failure. Returns with int_mode and divBy4 set appropriately.
  *
  */
 #ifdef DEBUG_VALUES
@@ -673,15 +984,14 @@ Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *in
 Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *int_mode, BOOL *divBy4)
 #endif
 {
-	uint32_t lltmp;
-	uint32_t a;
+	uint32_t a = 0;
 	Frequency_Hz freq_VCO = 0;
 	*int_mode = TRUE; // assumed
 
 #ifdef DO_BOUNDS_CHECKING	
 	// Multisynth bounds checking
-	if(freq_Fout > SI5351_MULTISYNTH_MAX_FREQ) return freq_VCO;
-	if(freq_Fout < SI5351_MULTISYNTH_MIN_FREQ) return freq_VCO;
+	if(freq_Fout > SI5351_MULTISYNTH_MAX_FREQ) return 0;
+	if(freq_Fout < SI5351_MULTISYNTH_MIN_FREQ) return 0;
 #endif // DO_BOUNDS_CHECKING
 	
 	// All frequencies above 150 MHz must use divide by 4
@@ -692,6 +1002,7 @@ Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *in
 	}
 	else
 	{
+		uint32_t temp;
 		uint8_t done = FALSE;
 		uint8_t success = FALSE;
 		uint8_t count = 0;
@@ -699,17 +1010,17 @@ Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *in
 		// Find a VCO frequency that is an even integer multiple of the desired Fout frequency
 		while(!done)
 		{
-			lltmp = SI5351_PLL_VCO_MAX - (count++ * freq_Fout);
+			temp = SI5351_PLL_VCO_MAX - (count++ * freq_Fout);
 				
-			if(lltmp >= SI5351_PLL_VCO_MIN)
+			if(temp >= SI5351_PLL_VCO_MIN)
 			{
-				lltmp /= freq_Fout;
+				temp /= freq_Fout;
 			
-				if((lltmp >= 4) && !(lltmp % 2)) // accept only even integers of 4 or greater
+				if((temp >= 4) && !(temp % 2)) // accept only even integers of 4 or greater
 				{
 					done = TRUE;
 					success = TRUE;
-					a = (uint32_t)lltmp;
+					a = temp;
 				}
 			}
 			else
@@ -721,10 +1032,6 @@ Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *in
 		if(success)
 		{
 			freq_VCO = a * freq_Fout;
-		}
-		else
-		{
-			freq_VCO = 0;
 		}
 	}
 		
@@ -740,8 +1047,119 @@ Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *in
 	return freq_VCO;
 }
 
-BOOL si5351_write_bulk(uint8_t addr, uint8_t bytes, uint8_t *data)
+/*
+ * Frequency_Hz multisynth_estimate(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *int_mode, BOOL *divBy4)
+ *
+ * Note: do not call this function if global value freqVCOB is zero
+ */
+Frequency_Hz multisynth_estimate(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *int_mode, BOOL *divBy4)
 {
+	uint32_t a, b, c;
+
+#ifdef DO_BOUNDS_CHECKING
+	if(freqVCOB < 600000000) return 0;
+	if(freqVCOB > 900000000) return 0;
+	if(freq_Fout > SI5351_MULTISYNTH_MAX_FREQ) return 0;
+	if(freq_Fout < SI5351_MULTISYNTH_MIN_FREQ) return 0;
+#endif // DO_BOUNDS_CHECKING
+
+	/* Determine integer part of feedback equation */
+	a = freqVCOB / freq_Fout;
+	b = freqVCOB % freq_Fout;
+	c = freq_Fout;
+	reduce_by_gcd(&b, &c); // might prevent overflow conditions
+	
+	/* Calculate the approximated output frequency given by fOUT = fvco / (a + b/c) */
+	freq_Fout = freqVCOB;
+	freq_Fout /= (a * c + b);
+	freq_Fout *= c;
+	
+	*int_mode = (b == 0) && !(a % 2);
+	*divBy4 = (a == 4) && *int_mode;
+
+	/* Calculate parameters */
+	if(*divBy4)
+	{
+		reg->p1 = 0;
+		reg->p2 = 0;
+		reg->p3 = 1;
+	}
+	else
+	{
+		uint32_t bx128 = b << 7;
+		uint32_t bx128overc = bx128 / c;
+		reg->p1 = (uint32_t)((a << 7) + bx128overc) - 512; // 128 * a + floor((128 * b) / c) - 512
+		reg->p2 = (uint32_t)bx128 - (c * bx128overc);   // 128 * b - c * floor((128 * b) / c)
+		reg->p3 = c;
+	}
+
+	return freq_Fout;
+}
+
+
+#ifdef NOT_NEEDED
+/*
+ * Calculate best rational approximation for a given fraction
+ * taking into account restricted register size, e.g. to find
+ * appropriate values for a pll with 5 bit denominator and
+ * 8 bit numerator register fields, trying to set up with a
+ * frequency ratio of 3.1415, one would say:
+ *
+ * rational_best_approximation(31415, 10000,
+ *              (1 << 8) - 1, (1 << 5) - 1, &n, &d);
+ *
+ * you may look at given_numerator as a fixed point number,
+ * with the fractional part size described in given_denominator.
+ *
+ * for theoretical background, see:
+ * http://en.wikipedia.org/wiki/Continued_fraction
+ */
+
+void rational_best_approximation(
+        uint32_t given_numerator, uint32_t given_denominator,
+        uint32_t max_numerator, uint32_t max_denominator,
+        uint32_t *best_numerator, uint32_t *best_denominator)
+{
+	uint32_t n, d, n0, d0, n1, d1;
+	n = given_numerator;
+	d = given_denominator;
+	n0 = d1 = 0;
+	n1 = d0 = 1;
+	for (;;) {
+		uint32_t t, a;
+		if ((n1 > max_numerator) || (d1 > max_denominator)) {
+			n1 = n0;
+			d1 = d0;
+			break;
+		}
+		if (d == 0)
+			break;
+		t = d;
+		a = n / d;
+		d = n % d;
+		n = t;
+		t = n0 + a * n1;
+		n0 = n1;
+		n1 = t;
+		t = d0 + a * d1;
+		d0 = d1;
+		d1 = t;
+	}
+	*best_numerator = n1;
+	*best_denominator = d1;
+}
+#endif // NOT_NEEDED
+
+
+
+#ifdef SELECTIVELY_DISABLE_OPTIMIZATION
+BOOL __attribute__((optimize("O0"))) si5351_write_bulk(uint8_t addr, uint8_t bytes, uint8_t *data)
+#else
+BOOL si5351_write_bulk(uint8_t addr, uint8_t bytes, uint8_t *data)
+#endif
+{
+#ifndef DEBUG_WITHOUT_I2C
+
 	int i;
 
 	i2c_start();
@@ -776,42 +1194,63 @@ BOOL si5351_write_bulk(uint8_t addr, uint8_t bytes, uint8_t *data)
 	}
 
 	i2c_stop();
+
+#endif //#ifndef DEBUG_WITHOUT_I2C
+
 	return FALSE;
 }
 
+#ifdef SELECTIVELY_DISABLE_OPTIMIZATION
+BOOL __attribute__((optimize("O0"))) si5351_write(uint8_t addr, uint8_t data)
+#else
 BOOL si5351_write(uint8_t addr, uint8_t data)
+#endif
 {
+#ifndef DEBUG_WITHOUT_I2C
+
 	i2c_start();
 	if(i2c_status() != TW_START)
 	{
 		i2c_stop();
 		return TRUE;
 	}
+	
 	i2c_write(SI5351_BUS_BASE_ADDR);
 	if(i2c_status() != TW_MT_SLA_ACK)
 	{
 		i2c_stop();
 		return TRUE;
 	}
+	
 	i2c_write(addr);
 	if(i2c_status() != TW_MT_DATA_ACK)
 	{
 		i2c_stop();
 		return TRUE;
 	}
+	
 	i2c_write(data);
 	if(i2c_status() != TW_MT_DATA_ACK)
 	{
 		i2c_stop();
 		return TRUE;
 	}
+	
 	i2c_stop();
+	
+#endif // #ifndef DEBUG_WITHOUT_I2C
 	
 	return FALSE;
 }
 
+#ifdef SELECTIVELY_DISABLE_OPTIMIZATION
+BOOL __attribute__((optimize("O0"))) si5351_read(uint8_t addr, uint8_t *data)
+#else
 BOOL si5351_read(uint8_t addr, uint8_t *data)
+#endif
 {
+#ifndef DEBUG_WITHOUT_I2C
+
 	i2c_start();
 	if(i2c_status() != TW_START)
 	{
@@ -855,6 +1294,9 @@ BOOL si5351_read(uint8_t addr, uint8_t *data)
 	}
 	
 	i2c_stop();
+	
+#endif // #ifndef DEBUG_WITHOUT_I2C
+	
 	return FALSE;
 }
 
@@ -912,8 +1354,9 @@ BOOL si5351_read_int_status(Si5351IntStatus *status)
 void set_multisynth_registers_source(Si5351_clock clk, Si5351_pll pll)
 {
 	uint8_t reg_val;
+	uint8_t addr = SI5351_CLK0_CTRL + (uint8_t)clk;
 	
-	if(si5351_read(SI5351_CLK0_CTRL + (uint8_t)clk, &reg_val))
+	if(si5351_read(addr, &reg_val))
 	{
 		return;
 	}
@@ -927,14 +1370,14 @@ void set_multisynth_registers_source(Si5351_clock clk, Si5351_pll pll)
 		reg_val |= SI5351_CLK_PLL_SELECT;
 	}
 	
-	si5351_write(SI5351_CLK0_CTRL + (uint8_t)clk, reg_val);
+	si5351_write(addr, reg_val);
 }
 
 
 /*
  * set_multisynth_registers(Si5351_clock clk, Si5351RegSet ms_reg, BOOL int_mode, uint8_t r_div, BOOL div_by_4)
  *
- * Set the specified multisynth parameters. Not normally needed, but public for advanced users.
+ * Set the specified multisynth parameters.
  *
  * clk - Clock output (use the si5351_clock enum)
  * int_mode - 1 to enable, 0 to disable
@@ -944,46 +1387,31 @@ void set_multisynth_registers_source(Si5351_clock clk, Si5351_pll pll)
  */
 void set_multisynth_registers(Si5351_clock clk, Si5351RegSet ms_reg, BOOL int_mode, uint8_t r_div, BOOL div_by_4)
 {
-	uint8_t params[10];
-	uint8_t i = 0;
-	uint8_t temp;
-	uint8_t reg_val;
+	uint8_t params[10]; 
+	uint8_t i = 0; 
+	uint8_t reg_val; 
 	
-	// Registers 42-43 for CLK0
-	temp = (uint8_t)((ms_reg.p3 >> 8) & 0xFF);
-	params[i++] = temp;
+	// Registers 42-43 for CLK0; 50-51 for CLK1
+	params[i++] = (uint8_t)((ms_reg.p3 >> 8) & 0xFF);
+	params[i++] = (uint8_t)(ms_reg.p3  & 0xFF);
 	
-	temp = (uint8_t)(ms_reg.p3  & 0xFF);
-	params[i++] = temp;
-	
-	// Register 44 for CLK0
+	// Register 44 for CLK0; 52 for CLK1
 	if(si5351_read((SI5351_CLK0_PARAMETERS + 2) + (clk * 8), &reg_val))
 	{
 		return;
 	}
 	
-	reg_val &= ~(0x03);
-	temp = reg_val | ((uint8_t)((ms_reg.p1 >> 16) & 0x03));
-	params[i++] = temp;
-	
+	reg_val &= 0xFC; //~(0x03);
+	params[i++] = reg_val | ((uint8_t)((ms_reg.p1 >> 16) & 0x03));
 	// Registers 45-46 for CLK0
-	temp = (uint8_t)((ms_reg.p1 >> 8) & 0xFF);
-	params[i++] = temp;
-	
-	temp = (uint8_t)(ms_reg.p1  & 0xFF);
-	params[i++] = temp;
-	
+	params[i++] = (uint8_t)((ms_reg.p1 >> 8) & 0xFF);
+	params[i++] = (uint8_t)(ms_reg.p1  & 0xFF);
 	// Register 47 for CLK0
-	temp = (uint8_t)((ms_reg.p3 >> 12) & 0xF0);
-	temp += (uint8_t)((ms_reg.p2 >> 16) & 0x0F);
-	params[i++] = temp;
-	
+	params[i] = (uint8_t)((ms_reg.p3 >> 12) & 0xF0);
+	params[i++] += (uint8_t)((ms_reg.p2 >> 16) & 0x0F);
 	// Registers 48-49 for CLK0
-	temp = (uint8_t)((ms_reg.p2 >> 8) & 0xFF);
-	params[i++] = temp;
-	
-	temp = (uint8_t)(ms_reg.p2  & 0xFF);
-	params[i++] = temp;
+	params[i++] = (uint8_t)((ms_reg.p2 >> 8) & 0xFF);
+	params[i++] = (uint8_t)(ms_reg.p2  & 0xFF);
 	
 	// Write the parameters
 	switch(clk)
@@ -1082,338 +1510,3 @@ void ms_div(Si5351_clock clk, uint8_t r_div, BOOL div_by_4)
 
 	si5351_write(reg_addr, reg_val);
 }
-
-/*
- Results from ClockMaker follow.
- 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  Output Frequency (MHz) = 3.51000000
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-#XTAL (MHz) = 25.000000000
-#Mode = Automatic
-#PLL A
-# Input Frequency (MHz) = 25.000000000
-# F divider = 1
-# PFD (MHz) = 25.000000000
-# VCO Frequency (MHz) =  702.000000000
-# Feedback Divider = 28  2/25
-# Internal Load Cap (pf) = 10
-# SSC disabled
-#PLL B
-# Input Frequency (MHz) = 0.0
-# VCO Frequency (MHz) =  0.0
-# Pull Range (ppm) = 0.0
-#Output Clocks
-#Channel 0
-# Output Frequency (MHz) = 3.510000000
-# Multisynth Output Frequency (MHz) = 3.510000000
-# Multisynth Divider = 200
-# R Divider = 1
-# PLL source = PLLA
-# Initial phase offset (ns) = 0.000
-# Error (ppm) = 0.0000
-# Powered = On
-# Inverted = No
-# Drive Strength = b00
-# Disable State = Low
-# Clock Source = b11
-#Channel 1
-# Powered = Off
-#Channel 2
-# Powered = Off
-#Channel 3
-# Powered = Off
-#Channel 4
-# Powered = Off
-#Channel 5
-# Powered = Off
-#Channel 6
-# Powered = Off
-#Channel 7
-# Powered = Off
-#
-
-#define NUM_REGS_MAX 100
-
-typedef struct Reg_Data{
-   unsigned char Reg_Addr;
-   unsigned char Reg_Val;
-} Reg_Data;
-
-Reg_Data const code Reg_Store[NUM_REGS_MAX] = {
-{ 15,0x00},
-{ 16,0x4C},
-{ 17,0x80},
-{ 18,0x80},
-{ 19,0x80},
-{ 20,0x80},
-{ 21,0x80},
-{ 22,0x80},
-{ 23,0x80},
-{ 24,0x00},
-{ 25,0x00},
-{ 26,0x00},
-{ 27,0x19},
-{ 28,0x00},
-{ 29,0x0C},
-{ 30,0x0A},
-{ 31,0x00},
-{ 32,0x00},
-{ 33,0x06},
-{ 34,0x00},
-{ 35,0x00},
-{ 36,0x00},
-{ 37,0x00},
-{ 38,0x00},
-{ 39,0x00},
-{ 40,0x00},
-{ 41,0x00},
-{ 42,0x00},
-{ 43,0x01},
-{ 44,0x00},
-{ 45,0x62},
-{ 46,0x00},
-{ 47,0x00},
-{ 48,0x00},
-{ 49,0x00},
-{ 50,0x00},
-{ 51,0x00},
-{ 52,0x00},
-{ 53,0x00},
-{ 54,0x00},
-{ 55,0x00},
-{ 56,0x00},
-{ 57,0x00},
-{ 58,0x00},
-{ 59,0x00},
-{ 60,0x00},
-{ 61,0x00},
-{ 62,0x00},
-{ 63,0x00},
-{ 64,0x00},
-{ 65,0x00},
-{ 66,0x00},
-{ 67,0x00},
-{ 68,0x00},
-{ 69,0x00},
-{ 70,0x00},
-{ 71,0x00},
-{ 72,0x00},
-{ 73,0x00},
-{ 74,0x00},
-{ 75,0x00},
-{ 76,0x00},
-{ 77,0x00},
-{ 78,0x00},
-{ 79,0x00},
-{ 80,0x00},
-{ 81,0x00},
-{ 82,0x00},
-{ 83,0x00},
-{ 84,0x00},
-{ 85,0x00},
-{ 86,0x00},
-{ 87,0x00},
-{ 88,0x00},
-{ 89,0x00},
-{ 90,0x00},
-{ 91,0x00},
-{ 92,0x00},
-{149,0x00},
-{150,0x00},
-{151,0x00},
-{152,0x00},
-{153,0x00},
-{154,0x00},
-{155,0x00},
-{156,0x00},
-{157,0x00},
-{158,0x00},
-{159,0x00},
-{160,0x00},
-{161,0x00},
-{162,0x00},
-{163,0x00},
-{164,0x00},
-{165,0x00},
-{166,0x00},
-{167,0x00},
-{168,0x00},
-{169,0x00},
-{170,0x00},
-};
-//End of file
-*/
-
-/*
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  Output Frequency (MHz) = 145.714000000
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  
- # Input Frequency (MHz) = 25.000000000
- # F divider = 1
- # PFD (MHz) = 25.000000000
- # VCO Frequency (MHz) =  874.284000000
- # Feedback Divider = 34  6071/6250
- # Internal Load Cap (pf) = 10
- # SSC disabled
- #PLL B
- # Input Frequency (MHz) = 0.0
- # VCO Frequency (MHz) =  0.0
- # Pull Range (ppm) = 0.0
- #Output Clocks
- #Channel 0
- # Output Frequency (MHz) = 145.714000000
- # Multisynth Output Frequency (MHz) = 145.714000000
- # Multisynth Divider = 6
- # R Divider = 1
- # PLL source = PLLA
- # Initial phase offset (ns) = 0.000
- # Error (ppm) = 0.0000
- # Powered = On
- # Inverted = No
- # Drive Strength = b00
- # Disable State = Low
- # Clock Source = b11
- #Channel 1
- # Powered = Off
- #Channel 2
- # Powered = Off
- #Channel 3
- # Powered = Off
- #Channel 4
- # Powered = Off
- #Channel 5
- # Powered = Off
- #Channel 6
- # Powered = Off
- #Channel 7
- # Powered = Off
- #
- 
- #define NUM_REGS_MAX 100
-
- typedef struct Reg_Data{
- unsigned char Reg_Addr;
- unsigned char Reg_Val;
- } Reg_Data;
-
- Reg_Data const code Reg_Store[NUM_REGS_MAX] = {
- { 15,0x00},
- { 16,0x4C},
- { 17,0x80},
- { 18,0x80},
- { 19,0x80},
- { 20,0x80},
- { 21,0x80},
- { 22,0x80},
- { 23,0x80},
- { 24,0x00},
- { 25,0x00},
- { 26,0x18},
- { 27,0x6A},
- { 28,0x00},
- { 29,0x0F},
- { 30,0x7C},
- { 31,0x00},
- { 32,0x08},
- { 33,0x28},
- { 34,0x00},
- { 35,0x00},
- { 36,0x00},
- { 37,0x00},
- { 38,0x00},
- { 39,0x00},
- { 40,0x00},
- { 41,0x00},
- { 42,0x00},
- { 43,0x01},
- { 44,0x00},
- { 45,0x01},
- { 46,0x00},
- { 47,0x00},
- { 48,0x00},
- { 49,0x00},
- { 50,0x00},
- { 51,0x00},
- { 52,0x00},
- { 53,0x00},
- { 54,0x00},
- { 55,0x00},
- { 56,0x00},
- { 57,0x00},
- { 58,0x00},
- { 59,0x00},
- { 60,0x00},
- { 61,0x00},
- { 62,0x00},
- { 63,0x00},
- { 64,0x00},
- { 65,0x00},
- { 66,0x00},
- { 67,0x00},
- { 68,0x00},
- { 69,0x00},
- { 70,0x00},
- { 71,0x00},
- { 72,0x00},
- { 73,0x00},
- { 74,0x00},
- { 75,0x00},
- { 76,0x00},
- { 77,0x00},
- { 78,0x00},
- { 79,0x00},
- { 80,0x00},
- { 81,0x00},
- { 82,0x00},
- { 83,0x00},
- { 84,0x00},
- { 85,0x00},
- { 86,0x00},
- { 87,0x00},
- { 88,0x00},
- { 89,0x00},
- { 90,0x00},
- { 91,0x00},
- { 92,0x00},
- {149,0x00},
- {150,0x00},
- {151,0x00},
- {152,0x00},
- {153,0x00},
- {154,0x00},
- {155,0x00},
- {156,0x00},
- {157,0x00},
- {158,0x00},
- {159,0x00},
- {160,0x00},
- {161,0x00},
- {162,0x00},
- {163,0x00},
- {164,0x00},
- {165,0x00},
- {166,0x00},
- {167,0x00},
- {168,0x00},
- {169,0x00},
- {170,0x00},
- };
- //End of file
- */
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
