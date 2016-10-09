@@ -1,7 +1,7 @@
 /*
  * si5351.h - Si5351 library for avr-gcc
- * Revision 0.3
- * 8 Oct 2016
+ * Revision 0.4
+ * 9 Oct 2016
  *
  * Copyright (C) 2014 Jason Milldrum <milldrum@gmail.com>
  *
@@ -25,10 +25,21 @@
 
 /*
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-Si5351 Frequency Setting Algorithm
+PURPOSE
+
+This is a basic library for the Si5351 series of clock generator ICs from Silicon Labs for the avr-gcc development 
+environment. It supports controlling the Si5351 with an AVR microcontroller with a TWI peripheral module. It is
+intentionally minimalistic in order to minimize program size and maximize execution speed. It is intended for use
+in projects utilizing small processors with limited program memory, where the program author is responsible for
+implementing any checks on the validity of parameters passed to the library functions.  
+
+
+The following high-level description of the Si5351 frequency-setting algorithm is provided to help the user understand
+the basic workings of the library, so that any needed modifications can be readily made.
 
 OVERVIEW
-The algorithm used in this library starts with the desired output frequency, and works backwards through Synthesis Stage 2 and Synthesis Stage 1, to determine the necessary register settings.
+The algorithm used in this library starts with the desired output frequency, and works backwards through Synthesis 
+Stage 2 and Synthesis Stage 1, to determine the necessary Si5351 register settings.
 
 STEPS (Output CLK0)
 
@@ -54,10 +65,11 @@ STEPS (Output CLK2)
    8 and 900 with resolution of 1/1048575. The resulting Fout might not be exact.
 3. Apply settings derived in Step 2 to use PLLB to generate Fout on CLK2.
 
-
+NOTE:
 The order of setting clocks CLK1 and CLK2 may be reversed. If that is done, then the Fvco for PLLB will be derived from the Fout chosen 
-for CLK2 (instead of CLK1 as shown in the steps above). Thus the order in which clocks CLK1 and CLK2 can affect Fvco for PLLB, 
-and therefore the accuracy of the second clock set.
+for CLK2 (instead of CLK1 as shown in the steps above). Thus the order in which clocks CLK1 and CLK2 are set, can affect Fvco for PLLB, 
+and therefore the accuracy of the clock settings. However, if the PLLB VCO frequency is first set (using si5351_set_vcoB_freq())
+then both CLK1 and CLK2 will use the specified VCO frequency to derive the signals on those outputs.
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 */
@@ -77,17 +89,31 @@ and therefore the accuracy of the second clock set.
 //				CLK2 uses PLLB
 //
 //
-// TYPICAL USAGE:
+// CODE EXAMPLES:
 //
-//  /* Initialize the Si5351 using the default xtal reference frequency (25 MHz); load capacitance = 10 pF. */
-// 	si5351_init(SI5351_CRYSTAL_LOAD_10PF, 0);
-//  /* Set the CLK0 output to 144.571000 MHz */
-//	si5351_set_freq(144571000, SI5351_CLK0);
+//    Example 1: Set CLK0 to 144.571 MHz
+//       si5351_init(SI5351_CRYSTAL_LOAD_10PF, 0);
+//       si5351_set_freq(144571000, SI5351_CLK0);
+//
+//    Example 2: Set CLK0 to 133.3 MHz, then use PLL VCO of 700 MHz to set CLK2 to 70MHz, and CLK1 to 10.705 MHz 
+//       si5351_init(SI5351_CRYSTAL_LOAD_10PF, 0);
+//       si5351_set_freq(133300000, SI5351_CLK0);
+//       si5351_set_vcoB_freq(700000000);
+//       si5351_set_freq(70000000, SI5351_CLK2);
+//       si5351_set_freq(10705000, SI5351_CLK1);
 //
 // The Si5351 needs only to be initialized once at power up. Initialization leaves all clocks powered down.
 //
-// Calls to si5351_set_freq set one output clock only: it must be called once for each clock that will be used.
+// Calls to si5351_set_freq() set one output clock only: it must be called once for each clock that will be used.
 // Unused clocks will remain powered down. Setting the frequency of a clock also enables that clock's output.
+//
+// si5351_set_vcoB_freq() should only be called once, and it must be called prior to setting CLK1 or CLK2 output
+// frequencies. Calling si5351_set_vcoB_freq() after CLK1 or CLK2 has been set will change the output frequencies
+// of both those clocks to a indeterminate values.
+//
+// The Si5351 integrated circuit places certain limitations on the ranges and combinations of frequencies that be
+// assigned to each of the three clock outputs. It is the library user's responsibility to be sufficiently familiar 
+// with the Si5351 specification so as to avoid illegal settings.
 //
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -101,13 +127,13 @@ and therefore the accuracy of the second clock set.
 //
 // Enable the following definitions as needed, but check program memory usage.
 //#define SUPPORT_FOUT_BELOW_1024KHZ
-//#define DO_BOUNDS_CHECKING
+//#define DO_BOUNDS_CHECKING /* enables limited checking of some parameter values */
 //#define DIVIDE_XTAL_FREQ_IF_NEEDED
 //#define APPLY_XTAL_CALIBRATION_VALUE
 //#define SUPPORT_STATUS_READS
 //
 // The following flag is used to disable GCC compiler optimizations in code regions where the optimizer has
-// found to introduce run-time problems. Comment out the following define if your compiler does not support 
+// been found to introduce run-time problems. Comment out the following #define if your compiler does not support 
 // the syntax used in this library.
 #define SELECTIVELY_DISABLE_OPTIMIZATION
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -117,7 +143,7 @@ and therefore the accuracy of the second clock set.
 #define SI5351_PLL_FIXED					900000000UL
 
 #define SI5351_PLL_VCO_MIN					600000000UL
-#define SI5351_PLL_VCO_MAX					900000000UL
+#define SI5351_PLL_VCO_MAX					900000000UL /* This must be defined as an even number to support frequency-setting algorithm */
 #define SI5351_MULTISYNTH_MIN_FREQ			1000000UL
 #define SI5351_MULTISYNTH_DIVBY4_FREQ		150000000UL
 #define SI5351_MULTISYNTH_MAX_FREQ			160000000UL
@@ -345,6 +371,7 @@ BOOL si5351_set_freq(Frequency_Hz, Si5351_clock);
 void si5351_clock_enable(Si5351_clock, BOOL);
 void si5351_drive_strength(Si5351_clock, Si5351_drive);
 void si5351_set_correction(int32_t);
+void si5351_set_vcoB_freq(Frequency_Hz);
 
 BOOL si5351_write(uint8_t, uint8_t);
 void pll_reset(Si5351_pll);

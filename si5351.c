@@ -1,7 +1,7 @@
 /*
  * si5351.c - Si5351 library for avr-gcc
- * Revision 0.3
- * 8 Oct 2016
+ * Revision 0.4
+ * 9 Oct 2016
  *
  * Copyright (C) 2014 Jason Milldrum <milldrum@gmail.com>
  *
@@ -39,7 +39,11 @@
 /********************************/
 	uint32_t EEMEM ee_ref_correction = 0;
 	static int32_t ref_correction = 0;
-	Frequency_Hz freqVCOB = 0;
+	static Frequency_Hz freqVCOB = 0;
+	
+	// TODO: A function that allows freqVCOB to be set and programmed into PLLB, would allow a user
+	// to specify the VCOb frequency, ensuring that a value derived by ClockBuilder is used
+	// for clocks running off of PLLB.
 
 	static Frequency_Hz xtal_freq = SI5351_XTAL_FREQ;
 	static uint8_t enabledClocksMask = 0x00;
@@ -196,13 +200,6 @@ Reg_Data const Reg_Store[NUM_REGS_MAX] = {
 	BOOL si5351_read(uint8_t, uint8_t *);
 	void set_integer_mode(Si5351_clock, BOOL);
 	void ms_div(Si5351_clock, uint8_t, BOOL);
-
-#ifdef NOT_NEEDED
-	void rational_best_approximation(
-		uint32_t given_numerator, uint32_t given_denominator,
-		uint32_t max_numerator, uint32_t max_denominator,
-		uint32_t *best_numerator, uint32_t *best_denominator);
-#endif // NOT_NEEDED
 
 #ifdef SUPPORT_STATUS_READS
 	BOOL si5351_read_sys_status(Si5351Status *);
@@ -369,7 +366,8 @@ BOOL compare_with_register_map(void)
 	
 	return result;
 }
-#endif
+
+#endif // #ifdef DEBUG_VALUES
 
 
 /*
@@ -559,7 +557,6 @@ BOOL si5351_set_freq(Frequency_Hz freq_Fout, Si5351_clock clk)
 		if(int_mode)
 		{
 			si5351_write(clock_ctrl_addr, 0x6C); // power up only clock being set, leaving that clock configured as follows:
-			if(freq_VCO) freqVCOB = freq_VCO;
 			//   o Drive strength = 2 mA
 			//   o Input source = multisynth
 			//   o Output clock not inverted
@@ -570,7 +567,6 @@ BOOL si5351_set_freq(Frequency_Hz freq_Fout, Si5351_clock clk)
 		else
 		{
 			si5351_write(clock_ctrl_addr, 0x2C); // power up only clock being set, leaving that clock configured as follows:
-			if(freq_VCO) freqVCOB = freq_VCO;
 			//   o Drive strength = 2 mA
 			//   o Input source = multisynth
 			//   o Output clock not inverted
@@ -578,6 +574,8 @@ BOOL si5351_set_freq(Frequency_Hz freq_Fout, Si5351_clock clk)
 			//   o Integer mode cleared
 			//   o Clock powered up
 		}
+		
+		if(freq_VCO) freqVCOB = freq_VCO;
 	}
 	
 	return FALSE;
@@ -796,7 +794,7 @@ void set_pll(Frequency_Hz freq_VCO, Si5351_pll target_pll)
 	{
 		si5351_write_bulk(SI5351_PLLA_PARAMETERS, i, params);
 	}
-	else if(target_pll == SI5351_PLLB)
+	else // if(target_pll == SI5351_PLLB)
 	{
 		si5351_write_bulk(SI5351_PLLB_PARAMETERS, i, params);
 	}
@@ -950,7 +948,7 @@ void reduce_by_gcd(uint32_t *m, uint32_t *n)
 	uint32_t b = *m;
 	uint32_t c = *n;
 	
-    if(!*m || !*n)
+    if(!b || !c)
         return;
 
     for(r = b%c; r; b = c, c = r, r = b%c);
@@ -1010,13 +1008,14 @@ Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *in
 		// Find a VCO frequency that is an even integer multiple of the desired Fout frequency
 		while(!done)
 		{
-			temp = SI5351_PLL_VCO_MAX - (count++ * freq_Fout);
+			temp = SI5351_PLL_VCO_MAX - (count * freq_Fout); /* SI5351_PLL_VCO_MAX assumed even */
+			count += 2;
 				
 			if(temp >= SI5351_PLL_VCO_MIN)
 			{
 				temp /= freq_Fout;
 			
-				if((temp >= 4) && !(temp % 2)) // accept only even integers of 4 or greater
+				if(temp >= 4) // accepts only even integers of 4 or greater
 				{
 					done = TRUE;
 					success = TRUE;
@@ -1047,10 +1046,27 @@ Frequency_Hz multisynth_calc(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *in
 	return freq_VCO;
 }
 
+
+/*
+ * void si5351_set_vcoB_freq(Frequency_Hz freq_VCO)
+ *
+ * This function provides the ability to specify a particular VCO frequency to be used for the target PLL,
+ * allowing a specific clock design (calculated by ClockBuilder for instance) to be implemented. 
+ *
+ * Currently this only works for PLLB.
+ * 
+ */
+void si5351_set_vcoB_freq(Frequency_Hz freq_VCO)
+{
+	freqVCOB = freq_VCO;
+	set_pll(freq_VCO, SI5351_PLLB);	
+	return;
+}
+
 /*
  * Frequency_Hz multisynth_estimate(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *int_mode, BOOL *divBy4)
  *
- * Note: do not call this function if global value freqVCOB is zero
+ * Note: do not call this function with global value freqVCOB == zero
  */
 Frequency_Hz multisynth_estimate(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL *int_mode, BOOL *divBy4)
 {
@@ -1067,7 +1083,7 @@ Frequency_Hz multisynth_estimate(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL
 	a = freqVCOB / freq_Fout;
 	b = freqVCOB % freq_Fout;
 	c = freq_Fout;
-	reduce_by_gcd(&b, &c); // might prevent overflow conditions
+	reduce_by_gcd(&b, &c); // prevents overflow conditions and makes results agree with ClockBuilder
 	
 	/* Calculate the approximated output frequency given by fOUT = fvco / (a + b/c) */
 	freq_Fout = freqVCOB;
@@ -1095,61 +1111,6 @@ Frequency_Hz multisynth_estimate(Frequency_Hz freq_Fout, Si5351RegSet *reg, BOOL
 
 	return freq_Fout;
 }
-
-
-#ifdef NOT_NEEDED
-/*
- * Calculate best rational approximation for a given fraction
- * taking into account restricted register size, e.g. to find
- * appropriate values for a pll with 5 bit denominator and
- * 8 bit numerator register fields, trying to set up with a
- * frequency ratio of 3.1415, one would say:
- *
- * rational_best_approximation(31415, 10000,
- *              (1 << 8) - 1, (1 << 5) - 1, &n, &d);
- *
- * you may look at given_numerator as a fixed point number,
- * with the fractional part size described in given_denominator.
- *
- * for theoretical background, see:
- * http://en.wikipedia.org/wiki/Continued_fraction
- */
-
-void rational_best_approximation(
-        uint32_t given_numerator, uint32_t given_denominator,
-        uint32_t max_numerator, uint32_t max_denominator,
-        uint32_t *best_numerator, uint32_t *best_denominator)
-{
-	uint32_t n, d, n0, d0, n1, d1;
-	n = given_numerator;
-	d = given_denominator;
-	n0 = d1 = 0;
-	n1 = d0 = 1;
-	for (;;) {
-		uint32_t t, a;
-		if ((n1 > max_numerator) || (d1 > max_denominator)) {
-			n1 = n0;
-			d1 = d0;
-			break;
-		}
-		if (d == 0)
-			break;
-		t = d;
-		a = n / d;
-		d = n % d;
-		n = t;
-		t = n0 + a * n1;
-		n0 = n1;
-		n1 = t;
-		t = d0 + a * d1;
-		d0 = d1;
-		d1 = t;
-	}
-	*best_numerator = n1;
-	*best_denominator = d1;
-}
-#endif // NOT_NEEDED
-
 
 
 #ifdef SELECTIVELY_DISABLE_OPTIMIZATION
