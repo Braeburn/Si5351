@@ -1,7 +1,7 @@
 /*
  * si5351.h - Si5351 library for avr-gcc
- * Revision 0.4
- * 9 Oct 2016
+ * Version 0.5
+ * 12 Oct 2016
  *
  * Copyright (C) 2014 Jason Milldrum <milldrum@gmail.com>
  *
@@ -123,7 +123,7 @@ then both CLK1 and CLK2 will use the specified VCO frequency to derive the signa
 //
 // Debug statements should be commented out in production code
 //#define DEBUG_WITHOUT_I2C
-//#define DEBUG_VALUES
+//#define DEBUGGING_ONLY
 //
 // Enable the following definitions as needed, but check program memory usage.
 //#define SUPPORT_FOUT_BELOW_1024KHZ
@@ -286,7 +286,7 @@ then both CLK1 and CLK2 will use the specified VCO frequency to derive the signa
 #endif
 
 
-#ifdef DEBUG_VALUES
+#ifdef DEBUGGING_ONLY
 
 #define NUM_REGS_MAX 100
 
@@ -295,14 +295,17 @@ typedef struct Reg_Data{
 	unsigned char Reg_Val;
 } Reg_Data;
 
-#endif // #ifdef DEBUG_VALUES
+#endif // #ifdef DEBUGGING_ONLY
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Typedefs
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#ifndef BOOL
 typedef uint8_t BOOL;
+#endif
+
 typedef uint32_t Frequency_Hz;
 
 /*
@@ -345,6 +348,28 @@ typedef struct si5351RegSet
 	uint32_t p3;
 } Si5351RegSet;
 
+typedef struct si5351RegBytes
+{
+	uint8_t p1_0;
+	uint8_t p1_1;
+	uint8_t p1_2;
+	uint8_t p1_3;
+	uint8_t p2_0;
+	uint8_t p2_1;
+	uint8_t p2_2;
+	uint8_t p2_3;
+	uint8_t p3_0;
+	uint8_t p3_1;
+	uint8_t p3_2;
+	uint8_t p3_3;
+} Si5351RegBytes;
+
+typedef union u_si5351_regs
+{
+	Si5351RegBytes reg;
+	Si5351RegSet   ms;
+} Union_si5351_regs;
+
 typedef struct si5351Status
 {
 	uint8_t SYS_INIT;
@@ -380,7 +405,7 @@ void pll_reset(Si5351_pll);
 void si5351_read_status(void);
 #endif
 
-#ifdef DEBUG_VALUES
+#ifdef DEBUGGING_ONLY
 BOOL write_register_map(void);
 BOOL compare_with_register_map(void);
 void dump_registers(void);
